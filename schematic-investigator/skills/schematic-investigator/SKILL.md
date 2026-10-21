@@ -1,0 +1,35 @@
+---
+name: schematic-investigator
+description: Locate pages, components, net labels, and circuit regions in local vector EDA schematic PDFs, inspect crops, and report cited observations for hardware debugging questions. Use for schematic investigation rather than electrical graph reconstruction or scanned-document OCR.
+---
+
+Use the bundled `<skill-directory>/.venv/bin/schematic-investigator` CLI when present; otherwise use `schematic-investigator` on PATH. Resolve the skill directory from this SKILL.md location, never from a hard-coded username. The repository provides `scripts/install_global.sh` for installation.
+
+## Efficient retrieval and electrical checks
+
+- Start search/locate with `--compact --top 3 --max-hits 8`. This preserves complete citations and reports omitted hits, without repeating region neighborhoods. Use `--output evidence.json` to retain the full result on disk. Expand the hit/page limits when needed; omitted hits and missing top-page results do not establish absence.
+- Reuse existing indexes when source path and SHA-256 still match. Never reuse an index across different PDF revisions. Read README or benchmark documentation only for setup or benchmark work.
+- Open a targeted crop first. Include the device pin number, wire endpoints, junctions and power/ground symbols needed for the claim; enlarge or inspect the full page if any endpoint is missing. Use `--margin` to widen RefDes crops.
+- Before calling a resistor a pull-up or pull-down, visually follow its other end to the actual supply or ground symbol. Confirm COMMON/NO STUFF and variant options. A GPIO/net name alone does not establish signal direction or firmware pinmux.
+- For board/revision comparison, maintain a small evidence table: document/revision, connector RefDes, physical pin, exact net, assembly state, source/destination. Verify both connector ends visually. Prioritize changed enable/reset/PG paths; do not promise automatic netlist or version-diff reconstruction.
+- Distinguish supply loss, reset assertion and boot failure. Recommend simultaneous rail/reset/enable measurements before claiming a power-cycle mechanism.
+
+## Evidence workflow
+
+1. Index the user-selected local PDF: `schematic-investigator --db <local-index> index <board.pdf>`. Each index contains one document; use a distinct database per board. Record the returned SHA-256. Do not silently substitute a different revision.
+2. Expand the debugging question into literal search terms. Use subsystem names, likely label variants, bus signals, active-low suffixes, and user-provided RefDes/part numbers. For example, a BMC management bus problem suggests BMC, I2C, SMB, SDA, and SCL; these are search hypotheses, not observed labels. Start with a few terms and refine from actual hits. The CLI does no LLM calls or hidden synonym generation.
+3. Search: `schematic-investigator --db <local-index> search '<question>' --expand BMC --expand I2C --expand SDA --compact --top 3`. Inspect ranked pages, hit text, bounding boxes, entities, and region anchors. Use `--mode exact` for literal labels, `--mode wildcard` for label families, `--mode regex` for trusted local patterns, and `--mode fuzzy` for uncertain spelling. Exact-locate identifiers before relying on a fuzzy match: `schematic-investigator --db <local-index> locate U23 --compact --top 3`.
+4. Inspect relevant crops: `schematic-investigator --db <local-index> crop --page 37 --refdes U23 --output <local.png>` or `crop --page 37 --bbox X0 Y0 X1 Y1 --dpi 300 --output <local.png>`. Coordinates are unrotated PDF points with top-left origin, pages start at 1. Crops normalize page rotation. Open the PNG with a local image viewer/tool; enlarge or widen when a pin, junction, wire endpoint, or off-page connector is ambiguous. Return to the full page when a region lacks context.
+5. Follow repeated net-label text onto other pages by exact search; record each occurrence separately. Identical labels are observations. Global/local scope and electrical continuity need additional evidence from sheet conventions and visible wires, junctions, pin numbers, or a user-supplied netlist. Proximity alone is never connectivity.
+
+## Diagnostic report
+
+Give the leading relevant pages and regions with exact label text, component/part candidates, and citations containing document SHA-256, physical page number, evidence ID, text, and bounding box from the CLI. Link the local crops. Include printed page labels separately if present. Describe why the evidence relates to the question.
+
+Separate confirmed observations (visible text, explicit pin/wire/junction details actually inspected) from hypotheses (suspected bus path, failed device, pull-up issue) and proposed measurements. Do not promote candidate RefDes/net/part classification into confirmed semantics. A nearby label does not identify a device pin. A missing search hit does not prove absence. When tracing is ambiguous, state what cannot be established and identify the crop, netlist, measurement, or datasheet needed. Cite schematic observations separately from external component specifications.
+
+The retrieval engine emits no electrical claims. A benchmark cannot automatically certify connectivity. For benchmark reports, use a JSON object keyed by case ID; each report has `citations` and `claims`. Each claim has `text`, `kind` (`observation` or `connectivity`), `status` (`confirmed` or `hypothesis`), and `citations`. All confirmed connectivity claims are conservatively flagged for manual review even when an agent believes a trace is clear. Forbidden conclusions are case-specific substring checks, not a semantic safety guarantee.
+
+## Local content boundary
+
+Indexing, searching, benchmarking, and rendering are local. Do not upload PDFs, extracts, indexes, crops, or sensitive labels to external services. Optional remote LLM/image reasoning requires explicit configuration identifying the service and explicit user approval of the content to be sent. This skill implements no upload or remote reasoning command. Keep local artifacts in user-selected locations; they contain schematic content.

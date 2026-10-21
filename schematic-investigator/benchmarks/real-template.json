@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "require_reports": true,
+  "cases": [
+    {
+      "id": "replace-with-reviewed-real-case",
+      "query": "Why is the BMC I2C bus stuck low?",
+      "expansions": ["BMC", "I2C", "SDA", "SCL"],
+      "expected": {
+        "pages": [37],
+        "components": ["U23"],
+        "nets": ["BMC_I2C_SDA"],
+        "regions": [{"page": 37, "bbox": [100, 100, 500, 400]}]
+      },
+      "alternatives": [
+        {
+          "pages": [38],
+          "components": ["U24"],
+          "nets": ["BMC_I2C_SDA"],
+          "regions": [{"page": 38, "bbox": [100, 100, 500, 400]}]
+        }
+      ],
+      "forbidden_unsupported_conclusions": ["U23 is defective", "U23 pin 1 is connected to U24 pin 2"]
+    }
+  ]
+}

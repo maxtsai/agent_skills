@@ -1,0 +1,7 @@
+__pycache__/
+*.egg-info/
+.venv/
+.schematic-investigator/
+*.sqlite*
+build/
+dist/

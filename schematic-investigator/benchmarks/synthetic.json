@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "require_reports": false,
+  "thresholds": {
+    "recall_at_5": 1.0,
+    "entity_recall": 1.0,
+    "region_accuracy": 1.0,
+    "citation_validity": 1.0
+  },
+  "cases": [
+    {
+      "id": "bmc-bus",
+      "query": "Why is the BMC management bus stuck?",
+      "expansions": ["BMC_I2C_SDA", "BMC_I2C_SCL", "PCA9548"],
+      "region_iou": 0.25,
+      "expected": {
+        "pages": [2],
+        "components": ["U23"],
+        "nets": ["BMC_I2C_SDA", "BMC_I2C_SCL"],
+        "regions": [{"page": 2, "bbox": [120, 80, 430, 360]}]
+      },
+      "alternatives": [],
+      "forbidden_unsupported_conclusions": ["U23 is connected to U77", "U23 is defective"]
+    },
+    {
+      "id": "power-enable",
+      "query": "Which circuit controls the power enable?",
+      "expansions": ["PWR_EN"],
+      "expected": {
+        "pages": [1],
+        "components": ["U1"],
+        "nets": ["PWR_EN"],
+        "regions": [{"page": 1, "bbox": [0, 80, 300, 320]}]
+      },
+      "forbidden_unsupported_conclusions": ["U1 is shorted"]
+    },
+    {
+      "id": "rotated-cpu-bus",
+      "query": "Where is the CPU side SDA signal?",
+      "expansions": ["CPU_I2C_SDA"],
+      "expected": {
+        "pages": [3],
+        "components": ["U77"],
+        "nets": ["CPU_I2C_SDA"],
+        "regions": [{"page": 3, "bbox": [70, 110, 320, 400]}]
+      },
+      "forbidden_unsupported_conclusions": ["CPU_I2C_SDA is connected to BMC_I2C_SDA"]
+    }
+  ]
+}

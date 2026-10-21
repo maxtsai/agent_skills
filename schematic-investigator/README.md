@@ -1,0 +1,157 @@
+# schematic-investigator
+
+A local-first Python CLI and Agent Skill for finding evidence in multipage vector EDA schematic PDFs. It indexes text and geometry with PyMuPDF, retrieves through SQLite FTS5 and literal/pattern/fuzzy matching, ranks pages and spatial regions, and renders high-resolution PNG crops. It makes no electrical connectivity claims.
+
+## Setup
+
+Python 3.10+ and SQLite with FTS5 are required.
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+source .venv/bin/activate
+schematic-investigator --help
+```
+
+Runtime dependency: PyMuPDF. Tests use standard-library unittest. Package installation may download dependencies; document processing makes no network requests. Review PyMuPDF licensing for your distribution/use case.
+
+The reusable skill is [skills/schematic-investigator/SKILL.md](skills/schematic-investigator/SKILL.md). Copy that directory into your agent's skill directory after installing the CLI in its environment. Keeping the skill in the repository avoids modifying global agent settings during development.
+
+## Commands
+
+```bash
+schematic-investigator index board.pdf
+schematic-investigator search "BMC I2C"
+schematic-investigator locate U23
+schematic-investigator crop --page 37 --refdes U23
+schematic-investigator benchmark tests.json
+```
+
+The default database is `.schematic-investigator/index.sqlite` in the current directory. An index contains one PDF; indexing another replaces it atomically. Use the global option **before** the subcommand to select another database:
+
+```bash
+schematic-investigator --db local/board.sqlite index board.pdf
+schematic-investigator --db local/board.sqlite search "Why does the management bus hang?" \
+  --expand BMC --expand I2C --expand SDA --expand SCL
+schematic-investigator search 'BMC_I2C_*' --mode wildcard
+schematic-investigator search 'BMC.*SD[AL]' --mode regex
+schematic-investigator search 'PCA954B' --mode fuzzy
+schematic-investigator search 'BMC_I2C_SDA' --mode exact
+schematic-investigator search 'BMC I2C' --mode fts
+schematic-investigator search 'BMC I2C' --top 5 --radius 120
+schematic-investigator crop --page 37 --bbox 100 200 600 550 --dpi 300 --output local/bus.png
+```
+
+All commands emit JSON. Success exits 0; a failed benchmark exits 1; invalid input or execution failure exits 2 with JSON on stderr. Search evidence includes `citation`, `bbox`, `direction`, candidate entities and matching terms. Add `--details` to search or locate to include original spans and word geometry; these are always preserved in SQLite. Search only reads the index and reports its fingerprint; crops and benchmarks additionally reject a changed source PDF. Re-index after editing or moving the source.
+
+Pages use **one-based physical page numbers**. Printed PDF page labels are separate. Bounding boxes are `[x0,y0,x1,y1]` in **unrotated PDF points (72/inch), top-left origin**. Crops are rendered in that orientation even for rotated pages. `crop --refdes` anchors to matching word boxes where available; multiple exact occurrences on the same page are enclosed together. Increase the margin for surrounding circuitry. PNG rendering is capped at 80 megapixels.
+
+## Retrieval and evidence model
+
+SQLite stores source SHA-256 and PDF metadata, page dimensions/rotation/labels/title candidates, and text-line evidence with original span and word boxes. Text spans from the same PDF line are joined; rotated writing direction is retained. Original vector drawing paths remain in the PDF and appear in crops; they are not parsed into a circuit graph. The index is an evidence locator, not a PDF archive.
+
+Auto retrieval tokenizes the question, drops common stop words, checks exact labels/subwords via FTS5, and uses standard-library SequenceMatcher at similarity >=0.8 for remaining spelling candidates. Explicit expansions are added by the agent or user. Wildcards match whole label tokens; exact searches match bounded literals; regex searches line text with case-insensitive Python regex. FTS uses quoted phrases (no raw FTS syntax). Fuzzy similarity is a retrieval heuristic, not confidence in device identity.
+
+Page score is `10 * distinct matched terms + sum(top five line quality scores)`. Exact hits score 1, FTS subword hits 0.9, and fuzzy hits `0.7 * similarity`. Regions are radius-expanded hit boxes clipped to page bounds, scored with the same coverage formula over local hits, with up to five per page; covered anchors are suppressed. This favors clusters of relevant labels over isolated title hits. Neighborhoods include intersecting text lines and never assert connections. Titles and entity types are heuristic candidates: net labels, part numbers, and ordinary text can be confused.
+
+No OCR, embeddings, vector database, graph reconstruction, LLM client, or agent framework is included. Scans/image-only pages yield no searchable evidence. Text split into different PDF lines or separate drawing primitives may need wildcard/regex variants or manual visual inspection. Local Python regex is for trusted patterns; length bounds do not prevent pathological backtracking. Retrieval currently scans line candidates for pattern/fuzzy scoring and region neighborhoods; very large PDFs may be slow.
+
+## Tests and reproducible benchmark
+
+```bash
+python -m unittest discover -s tests -v
+# Create a local synthetic vector fixture and benchmark it:
+PYTHONPATH=tests python -c "from fixtures import make_pdf; make_pdf('/tmp/schematic-fixture.pdf')"
+schematic-investigator --db /tmp/schematic-fixture.sqlite index /tmp/schematic-fixture.pdf
+schematic-investigator --db /tmp/schematic-fixture.sqlite benchmark benchmarks/synthetic.json \
+  --output /tmp/schematic-benchmark.json
+# Opt-in smoke test of your real local PDF:
+SCHEMATIC_TEST_PDF=/path/to/board.pdf python -m unittest discover -s tests -v
+```
+
+The real PDF smoke test verifies extractability, citation resolution and cropping, not retrieval correctness. For real accuracy testing, copy [benchmarks/real-template.json](benchmarks/real-template.json), replace all example labels/pages/regions with manually reviewed ground truth, and optionally add the index's `source_sha256` at the top level to pin the revision. No real schematic is bundled with the package.
+
+Benchmark format version 1:
+
+- `cases`: nonempty list of unique `id`, natural-language `query`, optional `expansions`, required `expected`, optional `alternatives`, `forbidden_unsupported_conclusions`, `radius`, and `region_iou` (default 0.25).
+- Each expected/alternative result contains required `pages` and optional `components`, `nets`, `regions`. A region is `{ "page": 2, "bbox": [120,80,430,360] }`. Alternatives are complete acceptable outcomes. Scoring chooses one complete variant by highest minimum metric, then highest total, rather than mixing expectations.
+- `thresholds` sets minimum metrics, defaulting to 1.0 for all retrieval/citation metrics. `require_reports: true` requires agent report input per case.
+
+Metrics are macro-averaged across applicable cases:
+
+| Metric | Definition |
+| --- | --- |
+| Recall@5 | Fraction of expected physical pages among the five retrieved pages |
+| Entity recall | Fraction of expected labels found among retrieved hits and region-neighborhood candidates (case-insensitive) |
+| Region accuracy | Fraction of expected regions having a same-page returned region with IoU >= `region_iou` |
+| Citation validity | Fraction resolving exactly to indexed text/page/box/hash, with text independently extracted from the original PDF box |
+| Unsupported connectivity claims | Count per case of supplied confirmed claims declared `kind: connectivity`; all require manual review |
+| Unsupported confirmed claims | Count per case with missing/invalid citations, forbidden substrings, or connectivity kind |
+
+Unspecified region/entity metrics and missing claim review are **null**, not measured successes. Zero returned citations yields null citation validity; page/entity/region targets still fail when absent. Benchmark output includes per-case results, chosen variant and violations. Unsupported-claim aggregates are mean counts per reviewed case, not error-rate percentages. Claim checks do not establish semantic entailment or detect undeclared connectivity in free text.
+
+Pass structured agent reports using `benchmark tests.json --reports reports.json`. Example shape (replace the citation with a complete CLI citation):
+
+```json
+{
+  "bmc-bus": {
+    "citations": [],
+    "claims": [
+      {"text": "A bus path through U23 is a hypothesis to inspect", "kind": "connectivity", "status": "hypothesis", "citations": []}
+    ]
+  }
+}
+```
+
+Copy actual full citations from search output for confirmed observations. Citation validity proves provenance, not the truth of an electrical diagnosis. The skill requires agents to distinguish observations from hypotheses and visually inspect ambiguous circuitry. Optional external reasoning is outside this implementation and requires explicit configuration and user approval before any schematic content is sent.
+
+## Compact retrieval and global Codex installation
+
+Use bounded console output while keeping full evidence on disk:
+
+```bash
+schematic-investigator --db local/board.sqlite search 'POWER_GOOD' --mode exact --compact --top 3 --max-hits 8 --output evidence.json
+schematic-investigator --db local/board.sqlite locate U23 --compact --top 3
+```
+
+`--compact` removes repeated neighborhoods and keeps full citations for displayed hits.
+`omitted_hits` counts hidden hits per returned page; `--top` still limits returned pages.
+`--output` saves the complete retrieval result before console compaction. Omit
+`--compact` for the original output format. These options do not reconstruct wiring.
+
+Install the runtime and skill into `${CODEX_HOME:-$HOME/.codex}/skills`:
+
+```bash
+bash scripts/install_global.sh
+```
+
+The installer uses a private virtual environment and installs the local package;
+it may download Python dependencies. The skill resolves its runtime relative to its
+own directory. Start a new Codex session to refresh skill discovery if necessary.
+
+## Publish a standalone GitHub repository
+
+When this directory is inside a larger repository, export an isolated copy first:
+
+```bash
+python3 scripts/export_github.py /tmp/schematic-investigator-github
+cd /tmp/schematic-investigator-github
+git init -b main
+git add README.md pyproject.toml .gitignore src tests benchmarks skills scripts
+git diff --cached --stat
+git diff --cached
+# Review staged code and choose the appropriate license before publishing.
+git commit -m "Add schematic investigation skill with compact evidence retrieval"
+# Requires GitHub CLI authentication; creates a private repository and pushes.
+gh repo create schematic-investigator --private --source=. --remote=origin --push
+```
+
+The exporter uses a code-file allowlist and refuses an existing destination.
+It excludes schematic PDFs, investigation reports, crops, databases and virtual environments.
+After reviewing the staged files, add a suitable LICENSE if you intend to grant reuse rights.
+For an existing empty GitHub repository, replace `gh repo create` with:
+
+```bash
+git remote add origin https://github.com/YOUR_ACCOUNT/schematic-investigator.git
+git push -u origin main
+```
