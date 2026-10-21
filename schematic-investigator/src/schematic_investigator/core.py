@@ -155,13 +155,20 @@ class Investigator:
                             "page": item["page"], "bbox": item["bbox"], "text": item["text"]}
         return item
 
-    def search(self, query, mode="auto", expansions=(), top=5, radius=100, details=False):
+    def search(self, query, mode="auto", expansions=(), top=5, radius=100, details=False,
+               pages=None, include_regions=True):
+        self.verify_source()
         if not query.strip() or len(query) > 512 or not 1 <= top <= 100 or not 0 < radius <= 2000:
             raise ValueError("Query length, top count, or radius outside supported range")
         if mode not in {"auto", "exact", "regex", "wildcard", "fuzzy", "fts"}:
             raise ValueError("Unknown search mode")
         if len(expansions) > 32 or any(not x.strip() or len(x) > 512 for x in expansions):
             raise ValueError("Use at most 32 nonempty expansions of at most 512 characters")
+        selected = sorted(set(pages)) if pages is not None else None
+        if selected is not None:
+            available = {r[0] for r in self.c.execute("SELECT page FROM pages")}
+            if not selected or any(p not in available for p in selected):
+                raise ValueError("Requested page does not exist (pages are 1-based)")
         queries = [query, *expansions]
         if mode == "auto":
             terms = list(dict.fromkeys(t for q in queries for t in TOKEN.findall(q) if t.lower() not in STOP))
@@ -181,7 +188,10 @@ class Investigator:
                     fts_by_term[term] = {r[0] for r in self.c.execute(
                         "SELECT rowid FROM text_fts WHERE text_fts MATCH ?", (phrase,))}
         hits = []
-        for row in self.c.execute("SELECT * FROM evidence"):
+        sql = "SELECT * FROM evidence"
+        if selected is not None:
+            sql += " WHERE page IN (" + ",".join("?" for _ in selected) + ")"
+        for row in self.c.execute(sql, selected or ()):
             text = row["text"]
             tokens = TOKEN.findall(text)
             matched, quality = [], 0.0
@@ -214,13 +224,20 @@ class Investigator:
         grouped = defaultdict(list)
         for hit in hits:
             grouped[hit["page"]].append(hit)
-        pages = []
+        ranked_pages = []
         for page, items in grouped.items():
             coverage = len({t.lower() for h in items for t in h["matched_terms"]})
             meta = dict(self.c.execute("SELECT * FROM pages WHERE page=?", (page,)).fetchone())
             # Coverage dominates repeated occurrence counts on a busy sheet.
             score = coverage * 10 + sum(sorted((h["score"] for h in items), reverse=True)[:5])
-            regions = []
+            ranked_pages.append({**meta, "score": round(score, 4),
+                                 "matched_terms": sorted({t for h in items for t in h["matched_terms"]}),
+                                 "hits": sorted(items, key=lambda h: (-h["score"], h["id"])), "regions": []})
+        ranked_pages.sort(key=lambda p: (-p["score"], p["page"]))
+        pages = ranked_pages[:top]
+        for result_page in pages if include_regions else []:
+            page, items, meta = result_page["page"], result_page["hits"], result_page
+            regions = result_page["regions"]
             region_candidates = []
             for hit in items:
                 b = hit["bbox"]
@@ -240,9 +257,6 @@ class Investigator:
                                 "interpretation": "Spatial neighborhood only; connectivity unconfirmed"})
                 if len(regions) >= 5:
                     break
-            pages.append({**meta, "score": round(score, 4), "matched_terms": sorted({t for h in items for t in h["matched_terms"]}),
-                          "hits": sorted(items, key=lambda h: (-h["score"], h["id"])), "regions": regions})
-        pages.sort(key=lambda p: (-p["score"], p["page"]))
         if not details:
             for p in pages:
                 for hit in p["hits"]:
@@ -254,7 +268,30 @@ class Investigator:
                         hit.pop("words", None)
         return {"query": query, "expansions": list(expansions), "mode": mode, "source": self.doc["path"],
                 "sha256": self.doc["sha256"], "coordinates": "unrotated PDF points, top-left origin; pages are 1-based",
-                "pages": pages[:top], "claims": []}
+                "total_matching_pages": len(ranked_pages), "omitted_pages": max(0, len(ranked_pages)-top),
+                "page_filter": selected, "regions_included": include_regions,
+                "pages": pages, "claims": []}
+
+    def inspect_evidence(self, evidence_id, radius=40, max_neighbors=20, details=False):
+        self.verify_source()
+        if not 0 < radius <= 2000 or not 1 <= max_neighbors <= 200:
+            raise ValueError("Radius must be 0..2000 (exclusive zero); max-neighbors must be 1..200")
+        row = self.c.execute("SELECT * FROM evidence WHERE id=?", (evidence_id,)).fetchone()
+        if row is None:
+            raise ValueError("Evidence ID not found in this index")
+        item = self.evidence(row)
+        page = dict(self.c.execute("SELECT * FROM pages WHERE page=?", (item["page"],)).fetchone())
+        b = item["bbox"]
+        box = [max(0, b[0]-radius), max(0, b[1]-radius),
+               min(page["width"], b[2]+radius), min(page["height"], b[3]+radius)]
+        neighbors = [h for h in self.neighborhood(item["page"], box) if h["id"] != evidence_id]
+        neighbors.sort(key=lambda h: (sum((h["bbox"][i]+h["bbox"][i+2]-b[i]-b[i+2])**2
+                                         for i in (0, 1)), h["id"]))
+        return {"source": self.doc["path"], "sha256": self.doc["sha256"], "page": page,
+                "bbox": box, "evidence": item if details else item["citation"],
+                "neighbors": [h if details else h["citation"] for h in neighbors[:max_neighbors]],
+                "total_neighbors": len(neighbors), "omitted_neighbors": max(0, len(neighbors)-max_neighbors),
+                "interpretation": "Spatial neighborhood only; connectivity unconfirmed"}
 
     def neighborhood(self, page, bbox):
         rect = fitz.Rect(bbox)
@@ -270,7 +307,7 @@ class Investigator:
         self.verify_source()
         anchors = []
         if refdes:
-            result = self.search(refdes, "exact", top=100, details=True)
+            result = self.search(refdes, "exact", top=1, details=True, pages=[page], include_regions=False)
             anchors = [h for p in result["pages"] if p["page"] == page for h in p["hits"]]
             if not anchors:
                 raise ValueError("RefDes not found on requested page")

@@ -7,6 +7,7 @@ import sys
 
 from .core import Investigator, index_pdf
 from .benchmark import run_benchmark
+from .comparison import compare_indexes, compact_comparison
 
 DEFAULT_DB = ".schematic-investigator/index.sqlite"
 
@@ -44,9 +45,24 @@ def parser():
     locate.add_argument("--top", type=int, default=100)
     locate.add_argument("--details", action="store_true")
     for command in (search, locate):
+        command.add_argument("--page", action="append", type=int, help="Restrict physical page; repeatable")
         command.add_argument("--compact", action="store_true", help="Print bounded citations without neighborhoods")
         command.add_argument("--max-hits", type=int, default=8, help="Hits per page in compact output (default: 8)")
         command.add_argument("--output", help="Save complete retrieval JSON before compacting stdout")
+    status = sub.add_parser("status", help="Verify source fingerprint against the index")
+    evidence = sub.add_parser("evidence", help="Expand one evidence ID and its spatial neighborhood")
+    evidence.add_argument("id", type=int)
+    evidence.add_argument("--radius", type=float, default=40)
+    evidence.add_argument("--max-neighbors", type=int, default=20)
+    evidence.add_argument("--details", action="store_true")
+    compare = sub.add_parser("compare", help="Compare cited text on aligned pages from two indexes")
+    compare.add_argument("--other-db", required=True, help="New revision index; --db is the old index")
+    compare.add_argument("--pair", type=int, nargs=2, action="append", metavar=("OLD_PAGE", "NEW_PAGE"))
+    compare.add_argument("--max-pairs", type=int, default=5)
+    compare.add_argument("--max-changes", type=int, default=20, help="Displayed added/removed lines per pair")
+    compare.add_argument("--crops-dir", help="Render old/new pages for displayed changed pairs")
+    compare.add_argument("--dpi", type=int, default=144)
+    compare.add_argument("--output", help="Save all differences and full citations")
     crop = sub.add_parser("crop")
     crop.add_argument("--page", type=int, required=True)
     group = crop.add_mutually_exclusive_group()
@@ -67,6 +83,13 @@ def main(argv=None):
     try:
         if args.command == "index":
             result = index_pdf(args.pdf, args.db)
+        elif args.command == "compare":
+            if not 1 <= args.max_changes <= 200:
+                raise ValueError("max-changes must be 1..200")
+            result = compare_indexes(args.db, args.other_db, args.pair, args.crops_dir, args.max_pairs, args.dpi)
+            if args.output:
+                Path(args.output).write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            result = compact_comparison(result, args.max_pairs, args.max_changes)
         elif args.command == "benchmark":
             result = run_benchmark(args.db, args.config, args.reports)
             if args.output:
@@ -74,9 +97,21 @@ def main(argv=None):
         else:
             with Investigator(args.db) as inv:
                 if args.command == "search":
-                    result = inv.search(args.query, args.mode, args.expand, args.top, args.radius, args.details)
+                    if args.max_hits < 1:
+                        raise ValueError("--max-hits must be positive")
+                    result = inv.search(args.query, args.mode, args.expand, args.top, args.radius, args.details,
+                                        pages=args.page, include_regions=not args.compact or bool(args.output))
                 elif args.command == "locate":
-                    result = inv.search(args.refdes, mode="exact", top=args.top, details=args.details)
+                    if args.max_hits < 1:
+                        raise ValueError("--max-hits must be positive")
+                    result = inv.search(args.refdes, mode="exact", top=args.top, details=args.details,
+                                        pages=args.page, include_regions=not args.compact or bool(args.output))
+                elif args.command == "status":
+                    inv.verify_source()
+                    result = {"source": inv.doc["path"], "sha256": inv.doc["sha256"], "verified": True,
+                              "pages": inv.c.execute("SELECT count(*) FROM pages").fetchone()[0]}
+                elif args.command == "evidence":
+                    result = inv.inspect_evidence(args.id, args.radius, args.max_neighbors, args.details)
                 else:
                     result = inv.crop(args.page, args.output or f".schematic-investigator/crops/page-{args.page}.png",
                                       args.refdes, args.bbox, args.margin, args.dpi)

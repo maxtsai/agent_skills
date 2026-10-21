@@ -42,7 +42,7 @@ schematic-investigator search 'BMC I2C' --top 5 --radius 120
 schematic-investigator crop --page 37 --bbox 100 200 600 550 --dpi 300 --output local/bus.png
 ```
 
-All commands emit JSON. Success exits 0; a failed benchmark exits 1; invalid input or execution failure exits 2 with JSON on stderr. Search evidence includes `citation`, `bbox`, `direction`, candidate entities and matching terms. Add `--details` to search or locate to include original spans and word geometry; these are always preserved in SQLite. Search only reads the index and reports its fingerprint; crops and benchmarks additionally reject a changed source PDF. Re-index after editing or moving the source.
+All commands emit JSON. Success exits 0; a failed benchmark exits 1; invalid input or execution failure exits 2 with JSON on stderr. Search evidence includes `citation`, `bbox`, `direction`, candidate entities and matching terms. Add `--details` to search or locate to include original spans and word geometry; these are always preserved in SQLite. Search, locate, evidence expansion, comparison and crops verify the source SHA-256 before returning evidence. A missing or changed source is rejected; re-index after editing or moving the PDF. `status` explicitly checks the index/source pair.
 
 Pages use **one-based physical page numbers**. Printed PDF page labels are separate. Bounding boxes are `[x0,y0,x1,y1]` in **unrotated PDF points (72/inch), top-left origin**. Crops are rendered in that orientation even for rotated pages. `crop --refdes` anchors to matching word boxes where available; multiple exact occurrences on the same page are enclosed together. Increase the margin for surrounding circuitry. PNG rendering is capped at 80 megapixels.
 
@@ -114,8 +114,8 @@ schematic-investigator --db local/board.sqlite search 'POWER_GOOD' --mode exact 
 schematic-investigator --db local/board.sqlite locate U23 --compact --top 3
 ```
 
-`--compact` removes repeated neighborhoods and keeps full citations for displayed hits.
-`omitted_hits` counts hidden hits per returned page; `--top` still limits returned pages.
+`--compact` skips region construction and neighborhood lookups when no `--output` is requested, and keeps full citations for displayed hits. With `--output`, full region retrieval is performed for the saved file.
+`omitted_hits` counts hidden hits per returned page; `omitted_pages` reports matching pages hidden by `--top`. `total_matching_pages` applies to the selected page scope.
 `--output` saves the complete retrieval result before console compaction. Omit
 `--compact` for the original output format. These options do not reconstruct wiring.
 
@@ -155,3 +155,55 @@ For an existing empty GitHub repository, replace `gh repo create` with:
 git remote add origin https://github.com/YOUR_ACCOUNT/schematic-investigator.git
 git push -u origin main
 ```
+
+## Focused retrieval and revision comparison (0.2)
+
+Check that the original PDF still matches its index, then restrict searches to known
+physical pages. `--page` may be repeated and is applied before ranking:
+
+```bash
+schematic-investigator --db local/board.sqlite status
+schematic-investigator --db local/board.sqlite search 'POWER_GOOD' --mode exact --page 7 --page 12 --compact
+schematic-investigator --db local/board.sqlite locate U23 --page 7 --compact
+schematic-investigator --db local/board.sqlite evidence 123 --radius 40 --max-neighbors 12
+```
+
+Evidence IDs belong to a single index. `evidence` returns the original citation,
+page metadata and a crop-ready neighborhood `bbox`. Nearby citations are ordered
+by distance, with `omitted_neighbors` reporting truncation. Add `--details` only
+when original spans/word geometry are needed. Spatial proximity does not establish
+connectivity. Source verification hashes the PDF for each retrieval operation;
+this adds disk I/O but detects edits even when the file size is unchanged.
+
+Compare two existing indexes, each built from its own revision:
+
+```bash
+schematic-investigator --db local/old.sqlite compare --other-db local/new.sqlite --max-pairs 3 --max-changes 12 --output diff.json
+# Explicit pairs restrict the comparison to those sheets; they override auto alignment.
+schematic-investigator --db local/old.sqlite compare --other-db local/new.sqlite --pair 7 7 --pair 11 12 --crops-dir local/comparison --output focused-diff.json
+```
+
+Automatic alignment proposes pairs whose normalized titles match exactly and
+occur once in each document. Labelled footer fields (`PAGE DETAIL` / `SHEET TITLE`)
+are preferred when available; otherwise the indexed font-size title is used. The
+selected footer title includes its own citation. Titles remain heuristic candidates:
+confirm pairs visually. Duplicate, renamed and unmatched sheets appear under
+`unpaired_old_pages` / `unpaired_new_pages`; use `--pair` to resolve them. They are
+not automatically classified as inserted/deleted sheets.
+
+Each paired page is compared as a multiset of extracted text lines, normalizing
+whitespace and preserving occurrence counts. Added/removed lines carry full
+citations including document hash, evidence ID, page and bounding box. Changes to
+values, net names or assembly annotations are candidates for visual review; the
+comparison does not automatically associate values with nearby components.
+
+Console output reports omitted line/pair counts. `--output` saves all differences
+within the selected alignment scope before display limits. `--crops-dir` renders
+separate old/new full-page PNGs for displayed changed pairs only (default 144 DPI,
+maximum 300), with paths in JSON. Use a cited bounding box with `crop` for a tighter
+view. Source PDFs are never modified by comparison rendering.
+
+**Limits:** identical text can conceal rerouted wires, moved labels, junction
+changes or swapped component values. `unchanged_text_pairs` means only unchanged
+text counts. This command does not establish electrical equivalence or a root
+cause; inspect old/new diagrams and verify the proposed mechanism by measurement.
