@@ -14,6 +14,7 @@ from contextlib import closing
 from difflib import SequenceMatcher
 
 import pymupdf as fitz
+from .classification import classify_text
 
 SCHEMA_VERSION = 1
 REFDES = re.compile(r"(?:U|R|C|L|D|Q|J|P|TP|FB|RN|SW|Y|X|CN)\d+[A-Z]?", re.I)
@@ -36,18 +37,7 @@ def union(boxes):
 
 
 def candidates(text):
-    found = []
-    for token in TOKEN.findall(text):
-        if REFDES.fullmatch(token):
-            kind = "refdes"
-        elif re.fullmatch(r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z][A-Za-z0-9-]{4,}", token) and "_" not in token:
-            kind = "part_number"
-        elif "_" in token or re.search(r"(?:I2C|SMB|SCL|SDA|GPIO|RESET|PWR|CLK)", token, re.I):
-            kind = "net"
-        else:
-            continue
-        found.append({"text": token, "kind": kind, "candidate": True})
-    return found
+    return classify_text(text)
 
 
 def connect(db):
@@ -151,6 +141,8 @@ class Investigator:
         item = dict(row)
         for k in ("bbox", "direction", "spans", "words", "entities"):
             item[k] = json.loads(item[k])
+        # Apply current text rules to old indexes too; stored evidence is untouched.
+        item["entities"] = candidates(item["text"])
         item["citation"] = {"sha256": self.doc["sha256"], "evidence_id": item["id"],
                             "page": item["page"], "bbox": item["bbox"], "text": item["text"]}
         return item

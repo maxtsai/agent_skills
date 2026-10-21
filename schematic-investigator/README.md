@@ -197,8 +197,10 @@ citations including document hash, evidence ID, page and bounding box. Changes t
 values, net names or assembly annotations are candidates for visual review; the
 comparison does not automatically associate values with nearby components.
 
-Console output reports omitted line/pair counts. `--output` saves all differences
-within the selected alignment scope before display limits. `--crops-dir` renders
+Console output prioritizes circuit-text candidates, reports omitted line/pair
+counts and separately counts recognized frame metadata. `--show-frame` includes
+all text in the displayed lists. `--output` saves all original differences plus
+separate circuit/frame groups within the selected alignment scope before display limits. `--crops-dir` renders
 separate old/new full-page PNGs for displayed changed pairs only (default 144 DPI,
 maximum 300), with paths in JSON. Use a cited bounding box with `crop` for a tighter
 view. Source PDFs are never modified by comparison rendering.
@@ -216,9 +218,11 @@ Build a review table from two indexed connector pages:
 schematic-investigator --db local/host.sqlite pinmap --other-db local/card.sqlite --left-page 12 --right-page 9 --left-connector HOST-J1 --right-connector CARD-J2 --pin A13 --pin A14 --left-net-side left --right-net-side left --output pins.json --markdown pins.md --crops-dir local/pin-crops
 ```
 
-`--pin` is repeatable (1..32 unique literal labels). Matching uses exact PDF word
-text: A1 does not match A13 or OA13. Both boards use the same requested pin labels;
-aliases, mirrored numbering or differently named mating contacts need manual review.
+`--pin` requests the same label on both sides. Repeatable `--pin-pair LEFT RIGHT`
+requests different labels, such as `--pin-pair A13 27`, or an explicitly supplied
+mirrored mapping. Both forms may be mixed (1..32 one-to-one mappings; duplicate
+left or right labels are rejected). Matching uses exact PDF word text: A1 does
+not match A13 or OA13. Requested mappings do not establish physical mating or compatibility.
 Connector labels are supplied by the caller and are not verified RefDes associations.
 
 Use `--left-bbox X0 Y0 X1 Y1` / `--right-bbox` to restrict each connector region,
@@ -258,3 +262,38 @@ The fixtures cover resistor endpoints, NO STUFF, crossings without junction dots
 unknown GPIO direction, separate rails, reset versus power loss, duplicate pins,
 opposite-bank decoys and rotation. Automated checks validate retrieval/provenance
 and specific overclaim checks; they do not establish that a model reasons correctly.
+
+## Explicit mappings, text categories and frame metadata (0.4)
+
+```bash
+schematic-investigator --db local/host.sqlite pinmap --other-db local/card.sqlite --left-page 12 --right-page 9 --left-connector J1 --right-connector J9 --pin A1 --pin-pair A13 27 --pin-pair B48 28 --output mapped-pins.json --markdown mapped-pins.md
+schematic-investigator --db local/old.sqlite compare --other-db local/new.sqlite --show-frame --output all-differences.json
+```
+
+Pinmap JSON schema is now version 2: rows have explicit `left_pin` / `right_pin`
+and caller-supplied mapping status. The legacy row `pin` remains the left label;
+endpoint `pin` is authoritative for each side. Each crop uses its own side's pin
+label. CLI missing-pin summaries also report the requested label for that side.
+
+Text categories are heuristic candidates with reasons. Rules separate net-class
+annotations such as `50OHM_NETCLASS1`, component values such as `4.7k` / `0.1uF`,
+RefDes and assembly annotations such as `NO STUFF` / `COMMON` / `DNI` from net-label
+suggestions. Pinmap retains these in `other_text_candidates` and a separate
+Markdown section, with independent limits and omission counts. Mixed text lines
+can appear in both categories with the same original citation. Original text,
+geometry and SHA-256 evidence are preserved; classification does not certify
+semantics, component association, population, direction or voltage domain.
+Current classification is applied when reading old indexes; no re-index is needed
+solely for these text categories.
+
+Revision comparison separates only recognizable date, revision, page-count and
+document-ID patterns near the top/bottom page perimeter. Position alone never
+classifies a footer component value as frame text; date-looking text inside the
+circuit body remains visible. Defaults show circuit-text candidates first and
+list frame-only page-pair counts separately. `--show-frame` restores all text to
+console lists; `--output` always preserves raw `removed` / `added` citations plus
+`circuit_removed` / `circuit_added` and `frame_removed` / `frame_added` groups.
+Frame entries wrap their original citation with a heuristic reason. Default crops
+follow the displayed eligible pairs; frame-only pairs are rendered when requested
+with `--show-frame`. Unrecognized frame formats may remain in circuit text, and
+neither category proves a functional circuit change.

@@ -31,13 +31,14 @@ def _endpoint(inv, meta, scope, lines, pin, max_candidates, max_occurrences, net
             if word["text"].casefold() == pin.casefold() and _inside(word["bbox"], scope):
                 occurrences.append({"word_bbox": word["bbox"], "citation": line["citation"],
                                     "direction": line["direction"]})
-    candidates = []
+    candidates, other_text = [], []
     for line in lines:
         names = list(dict.fromkeys(e["text"] for e in line["entities"]
                                   if e["kind"] == "net" and e["text"].casefold() != pin.casefold()))
-        if line["text"].strip().upper() == "GND":
+        if line["text"].strip().upper() == "GND" and "GND" not in names:
             names.append("GND")
-        if not names or not _inside(line["bbox"], scope):
+        other_labels = [e for e in line["entities"] if e["kind"] != "net"]
+        if not (names or other_labels) or not _inside(line["bbox"], scope):
             continue
         distances = []
         aligned_ids = []
@@ -56,11 +57,16 @@ def _endpoint(inv, meta, scope, lines, pin, max_candidates, max_occurrences, net
                 aligned_ids.append(occurrence["citation"]["evidence_id"])
         if distances:
             dx, dy = min(distances)
-            candidates.append({"net_labels": names, "citation": line["citation"],
+            item = {"net_labels": names, "citation": line["citation"],
                                "horizontal_gap_points": round(dx, 3), "row_offset_points": round(dy, 3),
                                "aligned_pin_evidence_ids": sorted(set(aligned_ids)),
-                               "status": "unreviewed_spatial_candidate"})
+                               "status": "unreviewed_spatial_candidate"}
+            if names:
+                candidates.append(item)
+            if other_labels:
+                other_text.append({**item, "classified_labels": other_labels})
     candidates.sort(key=lambda c: (c["horizontal_gap_points"], c["row_offset_points"], c["citation"]["evidence_id"]))
+    other_text.sort(key=lambda c: (c["horizontal_gap_points"], c["row_offset_points"], c["citation"]["evidence_id"]))
     visible = candidates[:max_candidates]
     shown = occurrences[:max_occurrences]
     boxes = [o["word_bbox"] for o in shown] + [c["citation"]["bbox"] for c in visible]
@@ -72,16 +78,21 @@ def _endpoint(inv, meta, scope, lines, pin, max_candidates, max_occurrences, net
             "omitted_pin_occurrences": max(0, len(occurrences)-max_occurrences),
             "net_candidates": visible, "total_net_candidates": len(candidates),
             "omitted_net_candidates": max(0, len(candidates)-max_candidates), "crop_bbox": crop_bbox,
+            "other_text_candidates": other_text[:max_candidates], "total_other_text_candidates": len(other_text),
+            "omitted_other_text_candidates": max(0, len(other_text)-max_candidates),
             "status": "unreviewed_candidates" if occurrences else "pin_text_not_found_in_scope",
             "net_side_filter": net_side, "assembly": "unknown", "direction": "unknown", "voltage_domain": "unknown"}
 
 
-def pinmap(old_db, other_db, left_page, right_page, left_connector, right_connector, pins,
+def pinmap(old_db, other_db, left_page, right_page, left_connector, right_connector, pins=None,
            left_bbox=None, right_bbox=None, max_candidates=3, max_occurrences=6, crops_dir=None,
-           left_net_side="either", right_net_side="either"):
-    if (not 1 <= len(pins) <= 32 or len(set(p.upper() for p in pins)) != len(pins)
-            or any(not re.fullmatch(r"[A-Za-z0-9_+-]{1,24}", p) for p in pins)):
-        raise ValueError("Provide 1..32 unique pin labels of 1..24 letters/digits/_/+/-, matched literally")
+           left_net_side="either", right_net_side="either", pin_pairs=None):
+    mappings = [(p, p) for p in (pins or [])] + [tuple(p) for p in (pin_pairs or [])]
+    if (not 1 <= len(mappings) <= 32 or any(len(pair) != 2 for pair in mappings)
+            or any(not re.fullmatch(r"[A-Za-z0-9_+-]{1,24}", p) for pair in mappings for p in pair)):
+        raise ValueError("Provide 1..32 pin mappings with literal pin labels of 1..24 letters/digits/_/+/-")
+    if any(len({pair[i].casefold() for pair in mappings}) != len(mappings) for i in (0, 1)):
+        raise ValueError("Pin mappings must be one-to-one; duplicate endpoint labels are not allowed")
     if not 1 <= max_candidates <= 20 or not 1 <= max_occurrences <= 20:
         raise ValueError("Candidate and occurrence limits must be 1..20")
     if any(not name.strip() or len(name) > 120 for name in (left_connector, right_connector)):
@@ -104,9 +115,10 @@ def pinmap(old_db, other_db, left_page, right_page, left_connector, right_connec
                                "bbox": scope, "scope": "user_bbox" if bbox is not None else "whole_page_unscoped"}
             contexts[side] = inv, meta, scope, _rows(inv, page)
         rows = []
-        for pin in pins:
-            row = {"pin": pin, "connection_status": "requires_visual_review"}
-            for side in ("left", "right"):
+        for left_pin, right_pin in mappings:
+            row = {"pin": left_pin, "left_pin": left_pin, "right_pin": right_pin,
+                   "mapping_source": "user_requested", "connection_status": "requires_visual_review"}
+            for side, pin in (("left", left_pin), ("right", right_pin)):
                 inv, meta, scope, lines = contexts[side]
                 endpoint = _endpoint(inv, meta, scope, lines, pin, max_candidates, max_occurrences,
                                      left_net_side if side == "left" else right_net_side)
@@ -115,7 +127,7 @@ def pinmap(old_db, other_db, left_page, right_page, left_connector, right_connec
                                                 bbox=endpoint["crop_bbox"], dpi=200)
                 row[side] = endpoint
             rows.append(row)
-        return {"version": 1, "documents": documents, "rows": rows, "claims": [],
+        return {"version": 2, "documents": documents, "rows": rows, "claims": [],
                 "limitations": ["Connector names are user labels, not verified RefDes associations.",
                                 "Same-row text is only a spatial candidate; no wire, junction or component tracing.",
                                 "Nearby labels, matching pin numbers and equal net names do not prove connectivity or compatibility.",
@@ -123,7 +135,8 @@ def pinmap(old_db, other_db, left_page, right_page, left_connector, right_connec
                                 "Use connector bboxes to reduce other-connector hits; inspect crops and widen for endpoints.",
                                 "Net-side filters describe drawing positions, not electrical signal direction.",
                                 "Rotated pin text is retained, but same-row net suggestions are not generated for it.",
-                                "Pin aliases, mirrored numbering, and different mating pin names need manual mapping."]}
+                                "Explicit pin mappings are caller supplied, not verified mating relationships.",
+                                "Text categories are heuristics; original text/citations are retained for review."]}
 
 
 def markdown_table(result):
@@ -135,8 +148,8 @@ def markdown_table(result):
         d = result["documents"][side]
         lines += [f"{side}: {escape(d['connector_label'])} (user label), physical p{d['page']}, "
                   f"SHA-256 `{d['sha256']}`, scope `{d['scope']}`.", ""]
-    lines += ["| Pin | Left label candidates | Right label candidates | Status |",
-              "| --- | --- | --- | --- |"]
+    lines += ["| Left pin | Right pin | Left label candidates | Right label candidates | Status |",
+              "| --- | --- | --- | --- | --- |"]
     for row in result["rows"]:
         values = []
         for side in ("left", "right"):
@@ -146,7 +159,16 @@ def markdown_table(result):
             if e["omitted_net_candidates"]:
                 text += f"; {e['omitted_net_candidates']} more candidates"
             values.append(escape(text))
-        lines.append(f"| {escape(row['pin'])} | {values[0]} | {values[1]} | unreviewed |")
+        lines.append(f"| {escape(row['left']['pin'])} | {escape(row['right']['pin'])} | {values[0]} | {values[1]} | unreviewed |")
+    lines += ["", "## Other nearby text (not used as net labels)", ""]
+    for row in result["rows"]:
+        for side in ("left", "right"):
+            e = row[side]
+            for candidate in e["other_text_candidates"]:
+                labels = ", ".join(f"{label['text']} [{label['kind']}]" for label in candidate["classified_labels"])
+                lines.append(f"- {side} {escape(e['pin'])}: {escape(labels)} (E{candidate['citation']['evidence_id']})")
+            if e["omitted_other_text_candidates"]:
+                lines.append(f"- {side} {escape(e['pin'])}: {e['omitted_other_text_candidates']} additional text candidates omitted")
     lines += ["", "The accompanying JSON contains original citations, word geometry and crop boxes.", ""]
     lines.extend(f"- {limit}" for limit in result["limitations"])
     return "\n".join(lines) + "\n"

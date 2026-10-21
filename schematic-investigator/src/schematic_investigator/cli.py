@@ -64,13 +64,16 @@ def parser():
     compare.add_argument("--crops-dir", help="Render old/new pages for displayed changed pairs")
     compare.add_argument("--dpi", type=int, default=144)
     compare.add_argument("--output", help="Save all differences and full citations")
+    compare.add_argument("--show-frame", action="store_true", help="Include frame metadata in displayed differences")
     pins = sub.add_parser("pinmap", help="Build unreviewed cross-board pin/net candidate table")
     pins.add_argument("--other-db", required=True)
     pins.add_argument("--left-page", type=int, required=True)
     pins.add_argument("--right-page", type=int, required=True)
     pins.add_argument("--left-connector", required=True, help="User label, not a verified RefDes association")
     pins.add_argument("--right-connector", required=True, help="User label, not a verified RefDes association")
-    pins.add_argument("--pin", action="append", required=True, help="Exact mating pin text; repeatable")
+    pins.add_argument("--pin", action="append", help="Same pin text on both boards; repeatable")
+    pins.add_argument("--pin-pair", nargs=2, action="append", metavar=("LEFT_PIN", "RIGHT_PIN"),
+                      help="Explicit different/mirrored pin labels; repeatable, may mix with --pin")
     pins.add_argument("--left-bbox", type=float, nargs=4)
     pins.add_argument("--right-bbox", type=float, nargs=4)
     pins.add_argument("--max-candidates", type=int, default=3)
@@ -104,7 +107,7 @@ def main(argv=None):
             result = pinmap(args.db, args.other_db, args.left_page, args.right_page,
                             args.left_connector, args.right_connector, args.pin,
                             args.left_bbox, args.right_bbox, args.max_candidates, args.max_occurrences, args.crops_dir,
-                            args.left_net_side, args.right_net_side)
+                            args.left_net_side, args.right_net_side, args.pin_pair)
             outputs = [Path(p).resolve() for p in (args.output, args.markdown) if p]
             protected = {Path(p).resolve() for p in [args.db, args.other_db,
                          result["documents"]["left"]["source"], result["documents"]["right"]["source"]]}
@@ -116,15 +119,15 @@ def main(argv=None):
             result = {"output": str(Path(args.output).resolve()),
                       "markdown": str(Path(args.markdown).resolve()) if args.markdown else None,
                       "rows": len(result["rows"]), "connection_status": "requires_visual_review",
-                      "pin_text_missing": [{"pin": row["pin"], "side": side} for row in result["rows"]
+                      "pin_text_missing": [{"pin": row[side]["pin"], "side": side} for row in result["rows"]
                                            for side in ("left", "right") if not row[side]["pin_occurrences"]]}
         elif args.command == "compare":
             if not 1 <= args.max_changes <= 200:
                 raise ValueError("max-changes must be 1..200")
-            result = compare_indexes(args.db, args.other_db, args.pair, args.crops_dir, args.max_pairs, args.dpi)
+            result = compare_indexes(args.db, args.other_db, args.pair, args.crops_dir, args.max_pairs, args.dpi, args.show_frame)
             if args.output:
                 Path(args.output).write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            result = compact_comparison(result, args.max_pairs, args.max_changes)
+            result = compact_comparison(result, args.max_pairs, args.max_changes, args.show_frame)
         elif args.command == "benchmark":
             result = run_benchmark(args.db, args.config, args.reports)
             if args.output:
