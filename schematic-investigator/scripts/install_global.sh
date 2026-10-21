@@ -7,5 +7,9 @@ python3 -m venv "$skill_dir/.venv"
 "$skill_dir/.venv/bin/python" -m pip install "$repo_dir"
 cp "$repo_dir/skills/schematic-investigator/SKILL.md" "$skill_dir/SKILL.md"
 cp "$repo_dir/README.md" "$skill_dir/README.md"
+if [ -d "$repo_dir/skills/schematic-investigator/references" ]; then
+    mkdir -p "$skill_dir/references"
+    cp -R "$repo_dir/skills/schematic-investigator/references/." "$skill_dir/references/"
+fi
 "$skill_dir/.venv/bin/schematic-investigator" search --help
 printf 'Installed skill: %s\n' "$skill_dir"

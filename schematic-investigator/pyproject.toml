@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "schematic-investigator"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local, evidence-first vector schematic PDF investigation"
 requires-python = ">=3.10"
 dependencies = ["PyMuPDF>=1.24,<2"]

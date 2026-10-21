@@ -207,3 +207,54 @@ view. Source PDFs are never modified by comparison rendering.
 changes or swapped component values. `unchanged_text_pairs` means only unchanged
 text counts. This command does not establish electrical equivalence or a root
 cause; inspect old/new diagrams and verify the proposed mechanism by measurement.
+
+## Cross-board pin review candidates (0.3)
+
+Build a review table from two indexed connector pages:
+
+```bash
+schematic-investigator --db local/host.sqlite pinmap --other-db local/card.sqlite --left-page 12 --right-page 9 --left-connector HOST-J1 --right-connector CARD-J2 --pin A13 --pin A14 --left-net-side left --right-net-side left --output pins.json --markdown pins.md --crops-dir local/pin-crops
+```
+
+`--pin` is repeatable (1..32 unique literal labels). Matching uses exact PDF word
+text: A1 does not match A13 or OA13. Both boards use the same requested pin labels;
+aliases, mirrored numbering or differently named mating contacts need manual review.
+Connector labels are supplied by the caller and are not verified RefDes associations.
+
+Use `--left-bbox X0 Y0 X1 Y1` / `--right-bbox` to restrict each connector region,
+including the labels you want considered. Without boxes the scope is explicitly
+`whole_page_unscoped`. `--left-net-side` / `--right-net-side` filter label positions
+relative to pin text; they do not establish signal direction. Split A/B banks into
+separate requests when they need different filters. Limits default to 3 net
+candidates and 6 pin occurrences per endpoint; omitted counts are explicit.
+
+The JSON preserves document hashes, physical pages, pin word boxes, citations,
+matched pin evidence IDs, unknown assembly/direction/voltage fields and crop-ready
+boxes. Markdown lists label candidates and evidence IDs; retain its accompanying
+JSON for full provenance. Console output is a short file summary. Optional crops
+are generated at 200 DPI for found pins; widen them if a wire endpoint or connector
+identity is outside the suggested region. Missing text does not establish absent
+pins. Rotated pin text is retained, but no horizontal net candidates are proposed.
+
+**Every result requires visual review.** The tool does not follow wires, establish
+junctions, identify pull-ups/downs, infer pinmux, or certify compatibility. Even a
+single nearby label can belong to another bank or an unconnected line.
+
+## Electrical review fixtures
+
+Generate and index an entirely synthetic PDF:
+
+```bash
+python scripts/make_review_fixture.py /tmp/electrical-review.pdf
+schematic-investigator --db /tmp/electrical-review.sqlite index /tmp/electrical-review.pdf
+schematic-investigator --db /tmp/electrical-review.sqlite benchmark benchmarks/electrical-review.json --reports review-reports.json
+```
+
+Use a Python environment with PyMuPDF to run the generator. The generator refuses
+existing output files. The benchmark requires reports keyed by case ID in the
+existing `citations` / `claims` schema. Inspect diagrams and produce substantive
+reports before checking the [reviewer criteria](skills/schematic-investigator/references/electrical-review.md).
+The fixtures cover resistor endpoints, NO STUFF, crossings without junction dots,
+unknown GPIO direction, separate rails, reset versus power loss, duplicate pins,
+opposite-bank decoys and rotation. Automated checks validate retrieval/provenance
+and specific overclaim checks; they do not establish that a model reasons correctly.

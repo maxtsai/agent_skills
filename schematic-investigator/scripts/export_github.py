@@ -13,7 +13,7 @@ def main():
     if destination.exists():
         parser.error("destination must not exist; choose a new directory")
     patterns = ["README.md", "pyproject.toml", ".gitignore", "src/**/*.py",
-                "tests/*.py", "benchmarks/*.json", "skills/**/SKILL.md", "scripts/*.py", "scripts/*.sh"]
+                "tests/*.py", "benchmarks/*.json", "skills/**/*.md", "scripts/*.py", "scripts/*.sh"]
     files = sorted({path for pattern in patterns for path in source.glob(pattern)
                     if path.is_file() and not path.is_symlink()})
     destination.mkdir(parents=True)

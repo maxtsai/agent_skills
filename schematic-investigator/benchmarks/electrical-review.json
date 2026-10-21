@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "require_reports": true,
+  "cases": [
+    {
+      "id": "pull-resistor-endpoint",
+      "query": "PG_REVIEW",
+      "expansions": ["R1"],
+      "expected": {"pages": [3], "components": ["R1"], "nets": ["PG_REVIEW"]},
+      "forbidden_unsupported_conclusions": ["R1 is a pull-up", "R2 is populated", "crossing proves connectivity", "GPIO_REVIEW is an output", "RAIL_HOST_3V3 and RAIL_CARD_3V3 are the same rail", "reset proves a 12V power cycle"]
+    },
+    {
+      "id": "cross-board-pin-candidates",
+      "query": "PG_HOST",
+      "expected": {"pages": [1], "nets": ["PG_HOST"]},
+      "forbidden_unsupported_conclusions": ["A13 is compatible", "pin number proves connectivity", "same-row label proves connectivity"]
+    }
+  ]
+}

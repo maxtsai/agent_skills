@@ -8,6 +8,7 @@ import sys
 from .core import Investigator, index_pdf
 from .benchmark import run_benchmark
 from .comparison import compare_indexes, compact_comparison
+from .pinmap import pinmap, markdown_table
 
 DEFAULT_DB = ".schematic-investigator/index.sqlite"
 
@@ -63,6 +64,22 @@ def parser():
     compare.add_argument("--crops-dir", help="Render old/new pages for displayed changed pairs")
     compare.add_argument("--dpi", type=int, default=144)
     compare.add_argument("--output", help="Save all differences and full citations")
+    pins = sub.add_parser("pinmap", help="Build unreviewed cross-board pin/net candidate table")
+    pins.add_argument("--other-db", required=True)
+    pins.add_argument("--left-page", type=int, required=True)
+    pins.add_argument("--right-page", type=int, required=True)
+    pins.add_argument("--left-connector", required=True, help="User label, not a verified RefDes association")
+    pins.add_argument("--right-connector", required=True, help="User label, not a verified RefDes association")
+    pins.add_argument("--pin", action="append", required=True, help="Exact mating pin text; repeatable")
+    pins.add_argument("--left-bbox", type=float, nargs=4)
+    pins.add_argument("--right-bbox", type=float, nargs=4)
+    pins.add_argument("--max-candidates", type=int, default=3)
+    pins.add_argument("--max-occurrences", type=int, default=6)
+    pins.add_argument("--left-net-side", choices=["left", "right", "either"], default="either")
+    pins.add_argument("--right-net-side", choices=["left", "right", "either"], default="either")
+    pins.add_argument("--crops-dir")
+    pins.add_argument("--output", required=True, help="Save full citation/geometry JSON")
+    pins.add_argument("--markdown", help="Also write a human review table")
     crop = sub.add_parser("crop")
     crop.add_argument("--page", type=int, required=True)
     group = crop.add_mutually_exclusive_group()
@@ -83,6 +100,24 @@ def main(argv=None):
     try:
         if args.command == "index":
             result = index_pdf(args.pdf, args.db)
+        elif args.command == "pinmap":
+            result = pinmap(args.db, args.other_db, args.left_page, args.right_page,
+                            args.left_connector, args.right_connector, args.pin,
+                            args.left_bbox, args.right_bbox, args.max_candidates, args.max_occurrences, args.crops_dir,
+                            args.left_net_side, args.right_net_side)
+            outputs = [Path(p).resolve() for p in (args.output, args.markdown) if p]
+            protected = {Path(p).resolve() for p in [args.db, args.other_db,
+                         result["documents"]["left"]["source"], result["documents"]["right"]["source"]]}
+            if len(set(outputs)) != len(outputs) or protected.intersection(outputs):
+                raise ValueError("Output paths must be distinct from each other, source PDFs and indexes")
+            Path(args.output).write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            if args.markdown:
+                Path(args.markdown).write_text(markdown_table(result), encoding="utf-8")
+            result = {"output": str(Path(args.output).resolve()),
+                      "markdown": str(Path(args.markdown).resolve()) if args.markdown else None,
+                      "rows": len(result["rows"]), "connection_status": "requires_visual_review",
+                      "pin_text_missing": [{"pin": row["pin"], "side": side} for row in result["rows"]
+                                           for side in ("left", "right") if not row[side]["pin_occurrences"]]}
         elif args.command == "compare":
             if not 1 <= args.max_changes <= 200:
                 raise ValueError("max-changes must be 1..200")
